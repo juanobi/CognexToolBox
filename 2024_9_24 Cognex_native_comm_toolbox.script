@@ -1,0 +1,319 @@
+#---------------------------------------------------------------------------------------------------------------------------------
+# Cognex Camera Native Mode communications toolbox
+# This script is used to open a Native Mode communications connection to a Cognex camera
+# This is just the framework for communications and does not include the commands themselves
+# Test it out, don't blame me if something doesn't work!
+#                                           ~Juan
+#
+# List of functions:
+#** cog_telnet_login(): used to login to the Cognex camera. uses the camera settings defined below
+# 
+#** cog_setonline(state): used to set the camera online or offline. will not force the 
+#                       camera online if it boots offline and has not been set online by other means.
+#   state:
+#       0 = offline
+#       1 = online
+# 
+#** cog_loadfile(fileName): used to load a job file. Must take camera offline first, then put back online.
+#   example using assignment: load_file_result=cog_loadfile("samplejob")
+# 
+#** cog_cmd_send(nm_cmd): send a command to the camera and report the results. eaxmaple using assignment:
+#                       command_result=cmg_cmd_send("SIA00217") to set call A2 to 17. command result will
+#                       be 1 if successful.
+#   nm_cmd:
+#       Native mode SET command to be sent to camera. must be inside quotes.
+# 
+#** cog_get(nm_cmd): send a command to the camera to get a value back. example using assignment:
+#                    get_result=cog_get("GVC002"). get_result will be set to the value in the cell.
+#                    An array will be returned: [response,value]
+#                    response = command response from camera
+#                    value = value of the get command   
+#
+#   nm_cmd:
+#       Native mode GET command to be sent to camera. must be inside quotes.
+# 
+#** cog_open_socket(): used to open the socked connection. called by cog_telnet_login()
+# 
+#** cog_close_socket(): close the socket
+# 
+#** send_str(str, socketname): used by other functions to add the CR and LF to the string sent to the camera.
+#
+#** cog_trigger(): sends a SE8 to the camera to trigger an acquisition
+#---------------------------------------------------------------------------------------------------------------------------------
+
+
+# Camera settings
+# These can also be declared in polyscope if you remove these lines
+# they will then carry over into the script.
+socket_name="cog_cam"
+telnet_user="admin"
+telnet_pw=""
+ip="192.168.11.20"
+port=23
+
+#Connection settings
+max_connect_attempts = 5
+max_read_attempts = 5
+native_read_timeout = 4
+native_send_timeout = 4
+dont_crash = True
+
+#---------------------------------------------------------------------------------------------------------------------------------
+#login to cognex camera telnet port
+#---------------------------------------------------------------------------------------------------------------------------------
+def cog_telnet_login():
+	textmsg("Starting cog_telnet_login to ", socket_name)
+    socket_status = cog_open_socket()
+	while True:
+		if socket_status:
+			connect_count = 0 
+			while connect_count < max_connect_attempts:
+				msg = socket_read_string(socket_name, timeout = native_read_timeout)
+				if str_find(msg,"User:",0) != -1:
+					break
+				end # if str_find(msg,"User:",0) != -1:
+				connect_count = connect_count + 1
+				textmsg("Failed to find 'User' prompt from camera's telnet port, attempt ", connect_count)
+			end # while connect_count < max_connect_attempts:
+			
+			if connect_count >= max_connect_attempts:
+				socket_close(socket_name)
+				socket_status = False
+				textmsg("Max attempts to find 'User' prompt from camera's telnet port exceeded")
+				break
+			end # if connect_count >= max_connect_attempts:
+			
+			# Send telnet username to the camera after "User" prompt is found
+			send_str(telnet_user, socket_name)
+			connect_count = 0 
+			while connect_count < max_connect_attempts:
+				msg = socket_read_string(socket_name, timeout = native_read_timeout)
+				if str_find(msg,"Password:",0) != -1:
+					break
+				end # if str_find(msg,"Password:",0) != -1:
+				connect_count = connect_count + 1
+				textmsg("Failed to find 'Password' prompt from camera's telnet port, attempt ", connect_count)
+			end # while connect_count < max_connect_attempts:
+			
+			if connect_count >= max_connect_attempts:
+				socket_close(socket_name)
+				socket_status = False
+				textmsg("Max attempts to find 'Password' prompt from camera's telnet port exceeded")
+				break
+			end # if connect_count >= max_connect_attempts:
+			
+			# Send telnet password to the camera after "Password" prompt is found
+			send_str(telnet_pw, socket_name)
+			connect_count = 0 
+			while connect_count < max_connect_attempts:
+				msg = socket_read_string(socket_name, timeout = native_read_timeout)
+				if str_find(msg,"User Logged In",0) != -1:
+					break
+				end # if str_find(msg,"User Logged In",0) != -1:
+				connect_count = connect_count + 1
+				textmsg("Failed to find 'User Logged In' prompt from camera's telnet port, attempt ", connect_count)
+			end # while connect_count < max_connect_attempts:
+			
+			if connect_count >= max_connect_attempts:
+				socket_close(socket_name)
+				socket_status = False
+				textmsg("Max attempts to find 'User Logged In' prompt from camera's telnet port exceeded")
+				break
+			end # if connect_count >= max_connect_attempts:
+		end # if socket_status:
+	break
+	end # def cog_telnet_login():
+
+	textmsg("Ending cog_telnet_login with status: ", socket_status)
+	return socket_status
+end #cog_telnet_login()
+
+#---------------------------------------------------------------------------------------------------------------------------------
+# Load a job into the camera (LoadFile)
+#---------------------------------------------------------------------------------------------------------------------------------
+def cog_loadfile(fileName):
+	textmsg("Starting cog_loadfile. Requested file name: ", fileName)
+	returnState = False
+	msg = cog_cmd_send(str_cat("LF",fileName))
+	if not str_empty(msg):
+		if str_find(msg,"1",0) == 0:
+			textmsg("LF Response: 1, Command executed successfully")
+			returnState = True
+		elif str_find(msg,"0",0) == 0:
+			textmsg("LF Response: 0, Unrecognized command")
+		elif str_find(msg,"-1",0) == 0:
+			textmsg("LF Response: -1, The filename is missing")
+		elif str_find(msg,"-2",0) == 0:
+			textmsg("LF Response: -2, The job failed to load")
+		elif str_find(msg,"-4",0) == 0:
+			textmsg("LF Response: -4, The vision system is out of memory")
+		elif str_find(msg,"-6",0) == 0:
+			textmsg("LF Response: -6, User does not have Full Access to execute the command")
+		else:
+			textmsg(str_cat("LF Response: ", str_cat(msg, ", Unknown response received")))	
+		end # if str_find(msg,"1",0) == 0:
+	else:
+		textmsg("LF Response empty: No response received")	
+	end # if not str_empty(msg):
+	textmsg("Ending cog_loadfile with state: ", returnState)
+	return returnState
+end # def loadFile_NM(fileName, socket_name):
+
+#---------------------------------------------------------------------------------------------------------------------------------
+#send native command to camera
+#---------------------------------------------------------------------------------------------------------------------------------
+def cog_cmd_send(nm_cmd):
+    textmsg("Starting cog_cmd_send data: ", nm_cmd)
+	readCount = 0
+	msg = ""
+	send_str(nm_cmd, socket_name)
+	while readCount < max_read_attempts:
+		msg = socket_read_string(socket_name, timeout = native_send_timeout)
+		if not str_empty(msg):
+			break
+		end # if not str_empty(msg):
+		readCount = readCount + 1
+		textmsg("Failed to find camera response, attempt ", readCount)
+	end # while readCount < max_read_attempts:
+
+	if readCount >= max_read_attempts:
+		textmsg("Max attempts to find camera response exceeded")
+	end # if readCount >= max_read_attempts:
+   textmsg("Ending cog_cmd_send with data: ", msg)	
+	return msg
+end # def cog_cmd_send(nm_cmd):
+
+#---------------------------------------------------------------------------------------------------------------------------------
+#get native command from camera
+#---------------------------------------------------------------------------------------------------------------------------------
+def cog_get(nm_cmd):
+    textmsg("Starting cog_get with command ", nm_cmd)
+    send_str(nm_cmd,socket_name)
+ 
+    msg_result=socket_read_string(socket_name,suffix="\r\n",interpret_escape=True)
+
+	if msg_result:
+		if str_find(msg_result,"1",0) == 0:
+			textmsg("cog_get result: 1, Command executed successfully")
+			returnState = True
+		elif str_find(msg_result,"0",0) == 0:
+			textmsg("cog_get result: 0, Unrecognized command")
+		elif str_find(msg_result,"-1",0) == 0:
+			textmsg("cog_get result: -1, The Cell ID is invalid")
+		elif str_find(msg_result,"-2",0) == 0:
+			textmsg("cog_get result: -2, The command could not be executed")
+		else:
+			textmsg(str_cat("cog_get result: ", str_cat(msg_result, ", Unknown response received")))	
+		end	# if str_find(if msg_result:,"1",0) == 0:
+	else:
+		textmsg("cog_get result empty: No response received")
+	end # if msg_result:   
+ 
+    msg_val=socket_read_string(socket_name,suffix="\r\n",interpret_escape=True)
+    textmsg("cog_get reponse:",msg_val)
+
+	return [msg_result,msg_val]
+end # def cog_cmd_send(nm_cmd):
+
+#---------------------------------------------------------------------------------------------------------------------------------
+#set online
+#---------------------------------------------------------------------------------------------------------------------------------
+def cog_setonline(state):
+	textmsg("Starting cog_setonline. Requested state: ", state)
+	returnState = False
+	msg = cog_cmd_send(str_cat("SO",state))
+	if not str_empty(msg):
+		if str_find(msg,"1",0) == 0:
+			textmsg("SO Response: 1, Command executed successfully")
+			returnState = True
+		elif str_find(msg,"0",0) == 0:
+			textmsg("SO Response: 0, Unrecognized command")
+		elif str_find(msg,"-1",0) == 0:
+			textmsg("SO Response: -1, The value is out of range")
+		elif str_find(msg,"-2",0) == 0:
+			textmsg("SO Response: -2, The command could not be executed")
+		elif str_find(msg,"-5",0) == 0:
+			textmsg("SO Response: -5, The sensor did not go Online")
+		elif str_find(msg,"-6",0) == 0:
+			textmsg("SO Response: -6, User does not have Full Access to execute the command")
+		else:
+			textmsg(str_cat("SO Response: ", str_cat(msg, ", Unknown response received")))	
+		end	# if str_find(msg,"1",0) == 0:
+	else:
+		textmsg("SO Response empty: No response received")
+	end # if not str_empty(msg):
+	textmsg("Ending cog_setonline with state: ", returnState)
+	return returnState
+end # def setOnline_NM(state, socket_name):
+
+#---------------------------------------------------------------------------------------------------------------------------------
+#Closes connection. Not necessary but nice to do.
+# coffee is for closers()
+#---------------------------------------------------------------------------------------------------------------------------------
+def cog_close_socket():
+    textmsg("Closing socket to ", socket_name)
+    socket_close(socket_name)
+end
+
+#---------------------------------------------------------------------------------------------------------------------------------
+#open socket to cognex camera
+#---------------------------------------------------------------------------------------------------------------------------------
+def cog_open_socket():
+    textmsg("Starting cog_open_socket to ", socket_name)
+    connect_count=0
+    socket_status=False
+    socket_close(socket_name)
+    while not socket_status:
+        socket_status=socket_open(ip,port,socket_name)
+        if not socket_status:
+			socket_close(socket_name)
+			if connect_count>= max_connect_attempts:
+				textmsg("Max connection attempts to exceeded")
+				break
+			else:
+				connect_count = connect_count + 1
+				textmsg("Failed to connect, attempt ", connect_count)
+			end 
+		end 
+     end   
+    textmsg(str_cat("Ending cog_open_socket to ", str_cat(socket_name, str_cat(" with status: ", socket_status))))
+    return socket_status
+end #def cog_open_socket():
+
+#---------------------------------------------------------------------------------------------------------------------------------
+# Sends a string followed by CR+LF bytes to the supplied socket
+#---------------------------------------------------------------------------------------------------------------------------------
+def send_str(str, socketname):
+		socket_send_string(str, socketname)
+		socket_send_byte(13, socketname)
+		socket_send_byte(10, socketname)
+end # def send_str(str):
+
+#---------------------------------------------------------------------------------------------------------------------------------
+# Sends a trigger command to the camera
+#---------------------------------------------------------------------------------------------------------------------------------
+def cog_trigger():
+    textmsg("Starting camera trigger to ", socket_name)
+   returnState = False
+    msg = cog_cmd_send("SW8")
+    if not str_empty(msg):
+		if str_find(msg,"1",0) == 0:
+			textmsg("Trigger Response: 1, Command executed successfully")
+			returnState = True
+		elif str_find(msg,"0",0) == 0:
+			textmsg("Trigger Response: 0, Unrecognized command")
+		elif str_find(msg,"-1",0) == 0:
+			textmsg("Trigger Response: -1,  The number is out of range (0 to 8) or not an INT")
+		elif str_find(msg,"-2",0) == 0:
+			textmsg("Trigger Response: -2, The command could not be executed")
+		elif str_find(msg,"-6",0) == 0:
+			textmsg("Trigger Response: -6, User does not have Full Access to execute the command")
+		else:
+			textmsg(str_cat("Trigger Response: ", str_cat(msg, ", Unknown response received")))		
+		end # if str_find(msg,"1",0) == 0:
+	else:
+		textmsg("Trigger Response empty: No response received")	
+	end # if not str_empty(msg):
+	textmsg("Ending cog_trigger with state: ", returnState)
+    return returnState
+end # def cog_trigger():
